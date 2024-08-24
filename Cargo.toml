@@ -1,4 +1,10 @@
 [package]
+name = "theforge"
+version = "0.0.1"
+description = "burn $COAL to wrap $ORE into $INGOT"
+license = "Apache-2.0"
+license-file = "LICENSE"
+repository = "https://github.com/eliasjudin/theforgeonsolana.git"
 keywords = ["solana", "crypto", "blockchain", "wrapping", "defi"]
 publish = false
 
@@ -20,9 +26,3 @@ overflow-checks = false
 
 [build]
 rustflags = ["-C", "target-cpu=native"]
-name = "theforge"
-version = "0.0.1"
-description = "burn $COAL to wrap $ORE into $INGOT"
-license = "Apache-2.0"
-license-file = "LICENSE"
-repository = "https://github.com/eliasjudin/theforgeonsolana.git"
