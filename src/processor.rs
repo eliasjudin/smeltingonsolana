@@ -1,6 +1,9 @@
-pub const MAX_AMOUNT: u64 = 1_000_000_000; // 1 billion tokens
-
-// contains the main logic for processing instructions.
+use crate::{
+    constants::{AUTHORITY_SEED, MAX_AMOUNT, SMELTING_SUCCESS_RATE},
+    error::SmeltingError,
+    instruction::SmeltingInstruction,
+    state::{SmeltingState, MAX_INGOT_SUPPLY},
+};
 use solana_program::program_error::ProgramError;
 
 use solana_program::{
@@ -14,12 +17,6 @@ use solana_program::{
     sysvar::{clock::Clock, rent::Rent, Sysvar},
 };
 use spl_token::state::Account as TokenAccount;
-
-use crate::{
-    error::SmeltingError,
-    instruction::SmeltingInstruction,
-    state::{SmeltingState, MAX_INGOT_SUPPLY},
-};
 
 pub struct Processor;
 
@@ -78,7 +75,7 @@ impl Processor {
 
         // Check if smelting succeeds (80% chance)
         let clock = Clock::get()?;
-        let success = (clock.unix_timestamp % 100) < 80;
+        let success = (clock.unix_timestamp % 100) < SMELTING_SUCCESS_RATE;
 
         // Burn COAL tokens
         let burn_instruction = spl_token::instruction::burn(
@@ -134,7 +131,7 @@ impl Processor {
             invoke_signed(
                 &mint_instruction,
                 &[ingot_account.clone(), token_program.clone()],
-                &[&[b"authority", &[smelting_state.authority_bump]]],
+                &[&[AUTHORITY_SEED, &[smelting_state.authority_bump]]],
             )?;
 
             smelting_state.update_on_successful_smelt(amount)?;
@@ -199,7 +196,7 @@ impl Processor {
         invoke_signed(
             &transfer_instruction,
             &[ore_account.clone(), token_program.clone()],
-            &[&[b"authority", &[smelting_state.authority_bump]]],
+            &[&[AUTHORITY_SEED, &[smelting_state.authority_bump]]],
         )?;
 
         smelting_state.update_on_unsmelt(amount, fee);
@@ -262,7 +259,7 @@ impl Processor {
                 mint_authority.clone(),
                 token_program.clone(),
             ],
-            &[&[b"authority", &[smelting_state.authority_bump]]],
+            &[&[AUTHORITY_SEED, &[smelting_state.authority_bump]]],
         )?;
 
         msg!("Successfully minted {} INGOT", amount);
