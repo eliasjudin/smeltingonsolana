@@ -1,0 +1,28 @@
+[package]
+keywords = ["solana", "crypto", "blockchain", "wrapping", "defi"]
+publish = false
+
+
+[dependencies]
+solana-sdk = "2.0.6"
+anchor-lang = "0.30.1"
+anchor-spl = "0.30.1"
+
+[profile.release]
+opt-level = 3           # Full optimisations
+codegen-units = 1       # Better optimization with fewer codegen units
+lto = true              # Enable Link Time Optimization (LTO)
+debug = false           # Disable debug info to reduce binary size
+panic = 'abort'         # Reduces the binary size further by not including unwinding information
+rpath = false
+incremental = false
+overflow-checks = false
+
+[build]
+rustflags = ["-C", "target-cpu=native"]
+name = "theforge"
+version = "0.0.1"
+description = "burn $COAL to wrap $ORE into $INGOT"
+license = "Apache-2.0"
+license-file = "LICENSE"
+repository = "https://github.com/eliasjudin/theforgeonsolana.git"
