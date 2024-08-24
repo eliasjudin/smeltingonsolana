@@ -189,33 +189,109 @@ pub mod theforge {
         Ok(())
     }
 
-    pub fn update_smelter_params(
-        ctx: Context<UpdateSmelterParams>,
+    pub fn initialize_multi_sig(
+        ctx: Context<InitializeMultiSig>,
+        signers: Vec<Pubkey>,
+        threshold: u8,
+    ) -> Result<()> {
+        require!(threshold > 0, SmelterError::InvalidThreshold);
+        require!(
+            signers.len() >= threshold as usize,
+            SmelterError::InvalidSignerCount
+        );
+        require!(signers.len() <= 10, SmelterError::TooManySigners); // Arbitrary limit
+
+        let multi_sig = &mut ctx.accounts.multi_sig_authority;
+        multi_sig.signers = signers;
+        multi_sig.threshold = threshold;
+        multi_sig.nonce = 0;
+
+        let smelter = &mut ctx.accounts.smelter;
+        smelter.multi_sig_authority = multi_sig.key();
+
+        Ok(())
+    }
+
+    pub fn propose_parameter_update(
+        ctx: Context<ProposeUpdate>,
         new_success_rate: Option<u8>,
         new_minimum_coal: Option<u64>,
         new_cooldown_period: Option<i64>,
     ) -> Result<()> {
-        let smelter = &mut ctx.accounts.smelter;
+        let multi_sig = &mut ctx.accounts.multi_sig_authority;
+        let proposal = &mut ctx.accounts.proposal;
 
-        if let Some(success_rate) = new_success_rate {
-            require!(
-                success_rate <= 100,
-                SmelterError::InvalidSmeltingSuccessRate
-            );
-            smelter.smelting_success_rate = success_rate;
-            msg!("Updated smelting success rate to: {}", success_rate);
-        }
+        require!(
+            multi_sig.signers.contains(&ctx.accounts.proposer.key()),
+            SmelterError::UnauthorizedProposer
+        );
 
-        if let Some(minimum_coal) = new_minimum_coal {
-            require!(minimum_coal > 0, SmelterError::InvalidAmount);
-            smelter.minimum_coal_amount = minimum_coal;
-            msg!("Updated minimum coal amount to: {}", minimum_coal);
-        }
+        proposal.proposed_by = ctx.accounts.proposer.key();
+        proposal.new_success_rate = new_success_rate;
+        proposal.new_minimum_coal = new_minimum_coal;
+        proposal.new_cooldown_period = new_cooldown_period;
+        proposal.approvals = vec![false; multi_sig.signers.len()];
+        proposal.is_executed = false;
+        proposal.nonce = multi_sig.nonce;
 
-        if let Some(cooldown_period) = new_cooldown_period {
-            require!(cooldown_period >= 0, SmelterError::InvalidCooldownPeriod);
-            smelter.cooldown_period = cooldown_period;
-            msg!("Updated cooldown period to: {}", cooldown_period);
+        multi_sig.nonce = multi_sig.nonce.checked_add(1).unwrap();
+
+        emit!(ProposalCreated {
+            proposal: proposal.key(),
+            proposer: proposal.proposed_by,
+        });
+
+        Ok(())
+    }
+
+    pub fn approve_parameter_update(ctx: Context<ApproveUpdate>) -> Result<()> {
+        let multi_sig = &ctx.accounts.multi_sig_authority;
+        let proposal = &mut ctx.accounts.proposal;
+        let signer = &ctx.accounts.signer;
+
+        require!(!proposal.is_executed, SmelterError::ProposalAlreadyExecuted);
+
+        let signer_index = multi_sig
+            .signers
+            .iter()
+            .position(|&s| s == signer.key())
+            .ok_or(SmelterError::UnauthorizedSigner)?;
+
+        require!(
+            !proposal.approvals[signer_index],
+            SmelterError::AlreadyApproved
+        );
+
+        proposal.approvals[signer_index] = true;
+
+        emit!(ProposalApproved {
+            proposal: proposal.key(),
+            signer: signer.key(),
+        });
+
+        if proposal.approvals.iter().filter(|&&x| x).count() >= multi_sig.threshold as usize {
+            let smelter = &mut ctx.accounts.smelter;
+
+            if let Some(rate) = proposal.new_success_rate {
+                require!(rate <= 100, SmelterError::InvalidSmeltingSuccessRate);
+                smelter.smelting_success_rate = rate;
+            }
+
+            if let Some(coal) = proposal.new_minimum_coal {
+                require!(coal > 0, SmelterError::InvalidAmount);
+                smelter.minimum_coal_amount = coal;
+            }
+
+            if let Some(period) = proposal.new_cooldown_period {
+                require!(period >= 0, SmelterError::InvalidCooldownPeriod);
+                smelter.cooldown_period = period;
+            }
+
+            proposal.is_executed = true;
+
+            emit!(ProposalExecuted {
+                proposal: proposal.key(),
+            });
         }
 
         Ok(())
@@ -287,6 +363,65 @@ pub struct UpdateSmelterParams<'info> {
     pub authority: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct InitializeMultiSig<'info> {
+    #[account(mut)]
+    pub smelter: Account<'info, Smelter>,
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + 32 * 10 + 1 + 8 // Adjust space calculation based on actual fields
+    )]
+    pub multi_sig_authority: Account<'info, MultiSigAuthority>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ProposeUpdate<'info> {
+    #[account(has_one = multi_sig_authority)]
+    pub smelter: Account<'info, Smelter>,
+    pub multi_sig_authority: Account<'info, MultiSigAuthority>,
+    #[account(
+        init,
+        payer = proposer,
+        space = 8 + 32 + 1 + 8 + 8 + 10 + 1 + 8 // Adjust space calculation based on actual fields
+    )]
+    pub proposal: Account<'info, Proposal>,
+    #[account(mut)]
+    pub proposer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ApproveUpdate<'info> {
+    #[account(mut, has_one = multi_sig_authority)]
+    pub smelter: Account<'info, Smelter>,
+    pub multi_sig_authority: Account<'info, MultiSigAuthority>,
+    #[account(mut)]
+    pub proposal: Account<'info, Proposal>,
+    pub signer: Signer<'info>,
+}
+
+#[account]
+pub struct MultiSigAuthority {
+    pub signers: Vec<Pubkey>,
+    pub threshold: u8,
+    pub nonce: u64,
+}
+
+#[account]
+pub struct Proposal {
+    pub proposed_by: Pubkey,
+    pub new_success_rate: Option<u8>,
+    pub new_minimum_coal: Option<u64>,
+    pub new_cooldown_period: Option<i64>,
+    pub approvals: Vec<bool>,
+    pub is_executed: bool,
+    pub nonce: u64,
+}
+
 #[account]
 pub struct Smelter {
     pub authority: Pubkey,
@@ -300,6 +435,7 @@ pub struct Smelter {
     pub bump: u8,
     pub token_decimals: u8,
     pub is_processing: bool,
+    pub multi_sig_authority: Pubkey,
 }
 
 #[error_code]
@@ -322,6 +458,20 @@ pub enum SmelterError {
     InsufficientFunds,
     #[msg("Reentrancy detected.")]
     ReentrancyDetected,
+    #[msg("Invalid threshold for multi-sig authority.")]
+    InvalidThreshold,
+    #[msg("Invalid number of signers for multi-sig authority.")]
+    InvalidSignerCount,
+    #[msg("Too many signers specified for multi-sig authority.")]
+    TooManySigners,
+    #[msg("Unauthorized proposer.")]
+    UnauthorizedProposer,
+    #[msg("Unauthorized signer.")]
+    UnauthorizedSigner,
+    #[msg("Proposal has already been executed.")]
+    ProposalAlreadyExecuted,
+    #[msg("Signer has already approved this proposal.")]
+    AlreadyApproved,
 }
 
 #[event]
@@ -343,6 +493,23 @@ pub struct UnsmeltingSuccessful {
     pub user: Pubkey,
     pub ingot_amount: u64,
     pub ore_amount: u64,
+}
+
+#[event]
+pub struct ProposalCreated {
+    pub proposal: Pubkey,
+    pub proposer: Pubkey,
+}
+
+#[event]
+pub struct ProposalApproved {
+    pub proposal: Pubkey,
+    pub signer: Pubkey,
+}
+
+#[event]
+pub struct ProposalExecuted {
+    pub proposal: Pubkey,
 }
 
 // Helper function for fixed-point percentage calculation
