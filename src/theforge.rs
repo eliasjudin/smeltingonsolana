@@ -29,27 +29,37 @@ pub mod theforge {
         smelter.smelting_success_rate = smelting_success_rate;
         smelter.minimum_coal_amount = minimum_coal_amount;
         smelter.cooldown_period = cooldown_period;
-        smelter.last_smelt_time = 0; // Initialize to 0, will be updated on first smelt
+        smelter.last_smelt_time = 0;
         smelter.bump = *ctx.bumps.get("smelter").unwrap();
 
+        msg!(
+            "Smelter initialized with success rate: {}",
+            smelting_success_rate
+        );
         Ok(())
     }
 
     pub fn smelt(ctx: Context<Smelt>, ore_amount: u64, coal_amount: u64) -> Result<()> {
         let smelter = &ctx.accounts.smelter;
 
-        // Input validation
         require!(ore_amount > 0, SmelterError::InvalidAmount);
         require!(
             coal_amount >= smelter.minimum_coal_amount,
             SmelterError::InsufficientCoal
         );
 
-        // Check cooldown
         let clock = Clock::get()?;
         require!(
             clock.unix_timestamp >= smelter.last_smelt_time + smelter.cooldown_period,
             SmelterError::CooldownPeriodNotMet
+        );
+
+        // Check if user has enough SOL to cover transaction fees
+        let rent = Rent::get()?;
+        let minimum_balance = rent.minimum_balance(0);
+        require!(
+            ctx.accounts.user_authority.lamports() > minimum_balance,
+            SmelterError::InsufficientFunds
         );
 
         // Burn COAL tokens
@@ -62,7 +72,6 @@ pub mod theforge {
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         token::burn(cpi_ctx, coal_amount)?;
 
-        // Check if smelting is successful
         let random_number = get_random_number(ctx.accounts.recent_blockhashes.to_account_info())?;
         if random_number % 100 < smelter.smelting_success_rate as u64 {
             // Transfer ORE tokens from user to program-owned account
@@ -94,14 +103,19 @@ pub mod theforge {
                 coal_amount,
                 ingot_amount: ore_amount,
             });
+            msg!(
+                "Smelting successful: {} ORE converted to {} INGOT",
+                ore_amount,
+                ore_amount
+            );
         } else {
             emit!(SmeltingFailed {
                 user: ctx.accounts.user_authority.key(),
                 coal_amount,
             });
+            msg!("Smelting failed: {} COAL burned", coal_amount);
         }
 
-        // Update last smelt time
         let mut smelter = &mut ctx.accounts.smelter;
         smelter.last_smelt_time = clock.unix_timestamp;
 
@@ -110,6 +124,24 @@ pub mod theforge {
 
     pub fn unsmelt(ctx: Context<Unsmelt>, ingot_amount: u64) -> Result<()> {
         let smelter = &ctx.accounts.smelter;
+
+        require!(ingot_amount > 0, SmelterError::InvalidAmount);
+        require!(
+            ctx.accounts.user_ingot_account.amount >= ingot_amount,
+            SmelterError::InsufficientIngot
+        );
+        require!(
+            ctx.accounts.program_ore_account.amount >= ingot_amount,
+            SmelterError::InsufficientProgramOre
+        );
+
+        // Check if user has enough SOL to cover transaction fees
+        let rent = Rent::get()?;
+        let minimum_balance = rent.minimum_balance(0);
+        require!(
+            ctx.accounts.user_authority.lamports() > minimum_balance,
+            SmelterError::InsufficientFunds
+        );
 
         // Burn INGOT tokens
         let cpi_accounts = Burn {
@@ -139,6 +171,43 @@ pub mod theforge {
             ingot_amount,
             ore_amount: ingot_amount,
         });
+        msg!(
+            "Unsmelting successful: {} INGOT converted back to {} ORE",
+            ingot_amount,
+            ingot_amount
+        );
+
+        Ok(())
+    }
+
+    pub fn update_smelter_params(
+        ctx: Context<UpdateSmelterParams>,
+        new_success_rate: Option<u8>,
+        new_minimum_coal: Option<u64>,
+        new_cooldown_period: Option<i64>,
+    ) -> Result<()> {
+        let smelter = &mut ctx.accounts.smelter;
+
+        if let Some(success_rate) = new_success_rate {
+            require!(
+                success_rate <= 100,
+                SmelterError::InvalidSmeltingSuccessRate
+            );
+            smelter.smelting_success_rate = success_rate;
+            msg!("Updated smelting success rate to: {}", success_rate);
+        }
+
+        if let Some(minimum_coal) = new_minimum_coal {
+            require!(minimum_coal > 0, SmelterError::InvalidAmount);
+            smelter.minimum_coal_amount = minimum_coal;
+            msg!("Updated minimum coal amount to: {}", minimum_coal);
+        }
+
+        if let Some(cooldown_period) = new_cooldown_period {
+            require!(cooldown_period >= 0, SmelterError::InvalidCooldownPeriod);
+            smelter.cooldown_period = cooldown_period;
+            msg!("Updated cooldown period to: {}", cooldown_period);
+        }
 
         Ok(())
     }
@@ -149,12 +218,7 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = authority,
-        // - 8 bytes for the account discriminator
-        // - 32 bytes each for authority, coal_mint, ore_mint, and ingot_mint (4 * 32 = 128 bytes)
-        // - 1 byte for smelting_success_rate
-        // - 8 bytes each for minimum_coal_amount, cooldown_period, and last_smelt_time (3 * 8 = 24 bytes)
-        // - 1 byte for bump
-        space = 8 + 32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 1 //162 bytes
+        space = 8 + 32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 1
     )]
     pub smelter: Account<'info, Smelter>,
     #[account(mut)]
@@ -170,6 +234,7 @@ pub struct Initialize<'info> {
 pub struct Smelt<'info> {
     #[account(mut)]
     pub smelter: Account<'info, Smelter>,
+    #[account(mut)]
     pub user_authority: Signer<'info>,
     #[account(mut, constraint = user_coal_account.owner == user_authority.key())]
     pub user_coal_account: Account<'info, TokenAccount>,
@@ -208,6 +273,13 @@ pub struct Unsmelt<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[derive(Accounts)]
+pub struct UpdateSmelterParams<'info> {
+    #[account(mut, has_one = authority)]
+    pub smelter: Account<'info, Smelter>,
+    pub authority: Signer<'info>,
+}
+
 #[account]
 pub struct Smelter {
     pub authority: Pubkey,
@@ -233,6 +305,12 @@ pub enum SmelterError {
     CooldownPeriodNotMet,
     #[msg("Invalid cooldown period. Must be non-negative.")]
     InvalidCooldownPeriod,
+    #[msg("Insufficient INGOT balance for unsmelting.")]
+    InsufficientIngot,
+    #[msg("Insufficient ORE in program account for unsmelting.")]
+    InsufficientProgramOre,
+    #[msg("Insufficient funds to cover transaction fees.")]
+    InsufficientFunds,
 }
 
 #[event]
