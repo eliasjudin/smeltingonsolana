@@ -31,6 +31,10 @@ pub mod theforge {
         smelter.cooldown_period = cooldown_period;
         smelter.last_smelt_time = 0;
         smelter.bump = *ctx.bumps.get("smelter").unwrap();
+        smelter.is_processing = false;
+
+        let ore_token = token::Mint::unpack(&ctx.accounts.ore_mint.data.borrow())?;
+        smelter.token_decimals = ore_token.decimals;
 
         msg!(
             "Smelter initialized with success rate: {}",
@@ -40,7 +44,9 @@ pub mod theforge {
     }
 
     pub fn smelt(ctx: Context<Smelt>, ore_amount: u64, coal_amount: u64) -> Result<()> {
-        let smelter = &ctx.accounts.smelter;
+        let smelter = &mut ctx.accounts.smelter;
+        require!(!smelter.is_processing, SmelterError::ReentrancyDetected);
+        smelter.is_processing = true;
 
         require!(ore_amount > 0, SmelterError::InvalidAmount);
         require!(
@@ -72,8 +78,7 @@ pub mod theforge {
         let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
         token::burn(cpi_ctx, coal_amount)?;
 
-        let random_number = get_random_number(ctx.accounts.recent_blockhashes.to_account_info())?;
-        if random_number % 100 < smelter.smelting_success_rate as u64 {
+        if smelter.smelting_success_rate as u64 > calculate_percentage(100, 0) {
             // Transfer ORE tokens from user to program-owned account
             let cpi_accounts = Transfer {
                 from: ctx.accounts.user_ore_account.to_account_info(),
@@ -116,14 +121,16 @@ pub mod theforge {
             msg!("Smelting failed: {} COAL burned", coal_amount);
         }
 
-        let mut smelter = &mut ctx.accounts.smelter;
         smelter.last_smelt_time = clock.unix_timestamp;
+        smelter.is_processing = false;
 
         Ok(())
     }
 
     pub fn unsmelt(ctx: Context<Unsmelt>, ingot_amount: u64) -> Result<()> {
-        let smelter = &ctx.accounts.smelter;
+        let smelter = &mut ctx.accounts.smelter;
+        require!(!smelter.is_processing, SmelterError::ReentrancyDetected);
+        smelter.is_processing = true;
 
         require!(ingot_amount > 0, SmelterError::InvalidAmount);
         require!(
@@ -177,6 +184,8 @@ pub mod theforge {
             ingot_amount
         );
 
+        smelter.is_processing = false;
+
         Ok(())
     }
 
@@ -218,7 +227,7 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = authority,
-        space = 8 + 32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 1
+        space = 8 + 32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 1 + 1 + 1
     )]
     pub smelter: Account<'info, Smelter>,
     #[account(mut)]
@@ -250,8 +259,6 @@ pub struct Smelt<'info> {
     pub ore_mint: Account<'info, token::Mint>,
     #[account(mut, address = smelter.ingot_mint)]
     pub ingot_mint: Account<'info, token::Mint>,
-    /// CHECK: This is safe because we only read from it
-    pub recent_blockhashes: AccountInfo<'info>,
     pub token_program: Program<'info, Token>,
 }
 
@@ -291,6 +298,8 @@ pub struct Smelter {
     pub cooldown_period: i64,
     pub last_smelt_time: i64,
     pub bump: u8,
+    pub token_decimals: u8,
+    pub is_processing: bool,
 }
 
 #[error_code]
@@ -311,6 +320,8 @@ pub enum SmelterError {
     InsufficientProgramOre,
     #[msg("Insufficient funds to cover transaction fees.")]
     InsufficientFunds,
+    #[msg("Reentrancy detected.")]
+    ReentrancyDetected,
 }
 
 #[event]
@@ -334,8 +345,7 @@ pub struct UnsmeltingSuccessful {
     pub ore_amount: u64,
 }
 
-fn get_random_number(recent_blockhashes: AccountInfo) -> Result<u64> {
-    let data = recent_blockhashes.try_borrow_data()?;
-    let most_recent = array_ref![data, 0, 8];
-    Ok(u64::from_le_bytes(*most_recent))
+// Helper function for fixed-point percentage calculation
+fn calculate_percentage(value: u64, percentage: u64) -> u64 {
+    (value * percentage) / 100
 }
