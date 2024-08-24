@@ -8,11 +8,18 @@ declare_id!("AA6AAAAAAAAAAAAAAAAA6A2AAA7AAAAAAA476AAAAAAA");
 pub mod theforge {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, smelting_success_rate: u8) -> Result<()> {
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        smelting_success_rate: u8,
+        minimum_coal_amount: u64,
+        cooldown_period: i64,
+    ) -> Result<()> {
         require!(
             smelting_success_rate <= 100,
             SmelterError::InvalidSmeltingSuccessRate
         );
+        require!(minimum_coal_amount > 0, SmelterError::InvalidAmount);
+        require!(cooldown_period >= 0, SmelterError::InvalidCooldownPeriod);
 
         let smelter = &mut ctx.accounts.smelter;
         smelter.authority = ctx.accounts.authority.key();
@@ -20,12 +27,30 @@ pub mod theforge {
         smelter.ore_mint = ctx.accounts.ore_mint.key();
         smelter.ingot_mint = ctx.accounts.ingot_mint.key();
         smelter.smelting_success_rate = smelting_success_rate;
+        smelter.minimum_coal_amount = minimum_coal_amount;
+        smelter.cooldown_period = cooldown_period;
+        smelter.last_smelt_time = 0; // Initialize to 0, will be updated on first smelt
+        smelter.bump = *ctx.bumps.get("smelter").unwrap();
 
         Ok(())
     }
 
     pub fn smelt(ctx: Context<Smelt>, ore_amount: u64, coal_amount: u64) -> Result<()> {
         let smelter = &ctx.accounts.smelter;
+
+        // Input validation
+        require!(ore_amount > 0, SmelterError::InvalidAmount);
+        require!(
+            coal_amount >= smelter.minimum_coal_amount,
+            SmelterError::InsufficientCoal
+        );
+
+        // Check cooldown
+        let clock = Clock::get()?;
+        require!(
+            clock.unix_timestamp >= smelter.last_smelt_time + smelter.cooldown_period,
+            SmelterError::CooldownPeriodNotMet
+        );
 
         // Burn COAL tokens
         let cpi_accounts = Burn {
@@ -76,6 +101,10 @@ pub mod theforge {
             });
         }
 
+        // Update last smelt time
+        let mut smelter = &mut ctx.accounts.smelter;
+        smelter.last_smelt_time = clock.unix_timestamp;
+
         Ok(())
     }
 
@@ -117,7 +146,16 @@ pub mod theforge {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = authority, space = 8 + 32 + 32 + 32 + 32 + 1 + 1)]
+    #[account(
+        init,
+        payer = authority,
+        // - 8 bytes for the account discriminator
+        // - 32 bytes each for authority, coal_mint, ore_mint, and ingot_mint (4 * 32 = 128 bytes)
+        // - 1 byte for smelting_success_rate
+        // - 8 bytes each for minimum_coal_amount, cooldown_period, and last_smelt_time (3 * 8 = 24 bytes)
+        // - 1 byte for bump
+        space = 8 + 32 + 32 + 32 + 32 + 1 + 8 + 8 + 8 + 1 //162 bytes
+    )]
     pub smelter: Account<'info, Smelter>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -177,6 +215,9 @@ pub struct Smelter {
     pub ore_mint: Pubkey,
     pub ingot_mint: Pubkey,
     pub smelting_success_rate: u8,
+    pub minimum_coal_amount: u64,
+    pub cooldown_period: i64,
+    pub last_smelt_time: i64,
     pub bump: u8,
 }
 
@@ -184,6 +225,14 @@ pub struct Smelter {
 pub enum SmelterError {
     #[msg("Invalid smelting success rate. Must be between 0 and 100.")]
     InvalidSmeltingSuccessRate,
+    #[msg("Invalid amount. Must be greater than zero.")]
+    InvalidAmount,
+    #[msg("Insufficient coal for smelting.")]
+    InsufficientCoal,
+    #[msg("Cooldown period not met.")]
+    CooldownPeriodNotMet,
+    #[msg("Invalid cooldown period. Must be non-negative.")]
+    InvalidCooldownPeriod,
 }
 
 #[event]
