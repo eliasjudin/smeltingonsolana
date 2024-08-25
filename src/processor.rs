@@ -1,6 +1,6 @@
 use solana_program::hash::hash;
 
-use crate::{
+;set_upgrade_authority_upgradeable::bpf_loader solana_program::useuse crate::{
     constants::{AUTHORITY_SEED, MAX_AMOUNT, SMELTING_SUCCESS_RATE},
     error::SmeltingError,
     instruction::SmeltingInstruction,
@@ -60,6 +60,9 @@ impl Processor {
                     return Err(ProgramError::InvalidInstructionData.into());
                 }
                 Self::process_transfer_ingot(accounts, amount, program_id)
+            }
+            SmeltingInstruction::UpgradeProgram => {
+                Self::process_upgrade_program(accounts, program_id)
             }
         }
     }
