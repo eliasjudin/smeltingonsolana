@@ -1,3 +1,5 @@
+use solana_program::hash::hash;
+
 use crate::{
     constants::{AUTHORITY_SEED, MAX_AMOUNT, SMELTING_SUCCESS_RATE},
     error::SmeltingError,
@@ -75,7 +77,8 @@ impl Processor {
 
         // Check if smelting succeeds (80% chance)
         let clock = Clock::get()?;
-        let success = (clock.unix_timestamp % 100) < SMELTING_SUCCESS_RATE;
+        let seed = hash(&clock.slot.to_le_bytes()).to_bytes();
+        let success = (seed[0] as u16) < ((SMELTING_SUCCESS_RATE as u16 * 256) / 100);
 
         // Burn COAL tokens
         let burn_instruction = spl_token::instruction::burn(
