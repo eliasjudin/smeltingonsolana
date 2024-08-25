@@ -1,6 +1,6 @@
 use solana_program::hash::hash;
 
-;set_upgrade_authority_upgradeable::bpf_loader solana_program::useuse crate::{
+use crate::{
     constants::{AUTHORITY_SEED, MAX_AMOUNT, SMELTING_SUCCESS_RATE},
     error::SmeltingError,
     instruction::SmeltingInstruction,
@@ -61,9 +61,6 @@ impl Processor {
                 }
                 Self::process_transfer_ingot(accounts, amount, program_id)
             }
-            SmeltingInstruction::UpgradeProgram => {
-                Self::process_upgrade_program(accounts, program_id)
-            }
         }
     }
 
@@ -83,60 +80,54 @@ impl Processor {
         let seed = hash(&clock.slot.to_le_bytes()).to_bytes();
         let success = (seed[0] as u16) < ((SMELTING_SUCCESS_RATE as u16 * 256) / 100);
 
+        // Precompute amounts
+        let coal_amount = amount;
+        let ore_amount = amount;
+        let ingot_amount = amount;
+
         // Burn COAL tokens
-        let burn_instruction = spl_token::instruction::burn(
-            token_program.key,
-            coal_account.key,
-            smelting_state.coal_mint,
-            user_account.key,
-            &[],
-            amount,
-        )?;
         invoke(
-            &burn_instruction,
-            &[
-                coal_account.clone(),
-                user_account.clone(),
-                token_program.clone(),
-            ],
+            &spl_token::instruction::burn(
+                token_program.key,
+                coal_account.key,
+                smelting_state.coal_mint,
+                user_account.key,
+                &[],
+                coal_amount,
+            )?,
+            &[coal_account, user_account, token_program],
         )?;
 
         if success {
             // Check if minting more INGOT tokens would exceed the maximum supply
-            if !smelting_state.can_mint_ingot(amount) {
+            if !smelting_state.can_mint_ingot(ingot_amount) {
                 return Err(SmeltingError::MaxSupplyExceeded.into());
             }
 
             // Transfer ORE tokens to program account
-            let transfer_instruction = spl_token::instruction::transfer(
-                token_program.key,
-                ore_account.key,
-                smelting_state.ore_vault,
-                user_account.key,
-                &[],
-                amount,
-            )?;
             invoke(
-                &transfer_instruction,
-                &[
-                    ore_account.clone(),
-                    user_account.clone(),
-                    token_program.clone(),
-                ],
+                &spl_token::instruction::transfer(
+                    token_program.key,
+                    ore_account.key,
+                    smelting_state.ore_vault,
+                    user_account.key,
+                    &[],
+                    ore_amount,
+                )?,
+                &[ore_account, user_account, token_program],
             )?;
 
             // Mint INGOT tokens to user
-            let mint_instruction = spl_token::instruction::mint_to(
-                token_program.key,
-                smelting_state.ingot_mint,
-                ingot_account.key,
-                &smelting_state.authority,
-                &[],
-                amount,
-            )?;
             invoke_signed(
-                &mint_instruction,
-                &[ingot_account.clone(), token_program.clone()],
+                &spl_token::instruction::mint_to(
+                    token_program.key,
+                    smelting_state.ingot_mint,
+                    ingot_account.key,
+                    &smelting_state.authority,
+                    &[],
+                    ingot_amount,
+                )?,
+                &[ingot_account, token_program],
                 &[&[AUTHORITY_SEED, &[smelting_state.authority_bump]]],
             )?;
 
