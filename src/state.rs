@@ -3,8 +3,8 @@ use solana_program::{
     program_pack::{IsInitialized, Pack, Sealed},
     pubkey::Pubkey,
 };
+use crate::constants::MAX_INGOT_SUPPLY;
 
-pub const MAX_INGOT_SUPPLY: u64 = 21_000_000;
 pub const UNSMELT_FEE_PERCENTAGE: u8 = 5;
 
 pub struct SmeltingState {
@@ -95,6 +95,25 @@ impl Pack for SmeltingState {
         ore_decimals_dst[0] = self.ore_decimals;
         ingot_decimals_dst[0] = self.ingot_decimals;
         coal_decimals_dst[0] = self.coal_decimals;
+    }
+}
+
+impl Default for SmeltingState {
+    fn default() -> Self {
+        SmeltingState {
+            is_initialized: false,
+            authority: Pubkey::default(),
+            authority_bump: 0,
+            ore_mint: Pubkey::default(),
+            ingot_mint: Pubkey::default(),
+            coal_mint: Pubkey::default(),
+            ore_vault: Pubkey::default(),
+            total_ingots_minted: 0,
+            total_ore_locked: 0,
+            ore_decimals: 0,
+            ingot_decimals: 0,
+            coal_decimals: 0,
+        }
     }
 }
 

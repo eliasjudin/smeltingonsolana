@@ -13,7 +13,7 @@ use solana_program::{
     entrypoint::ProgramResult,
     msg,
     program::{invoke, invoke_signed},
-    program_error::ProgrsamError,
+    program_error::ProgramError,
     pubkey::Pubkey,
     system_instruction,
     sysvar::{clock::Clock, rent::Rent, Sysvar},
@@ -74,6 +74,12 @@ impl Processor {
         let token_program = next_account_info(account_info_iter)?;
 
         let mut smelting_state = SmeltingState::unpack(&smelting_state_account.data.borrow())?;
+
+        // Check if user has enough ORE tokens
+        let ore_account_data = TokenAccount::unpack(&ore_account.data.borrow())?;
+        if ore_account_data.amount < amount {
+            return Err(SmeltingError::InsufficientBalance.into());
+        }
 
         // Check if smelting succeeds (80% chance)
         let clock = Clock::get()?;
@@ -159,6 +165,12 @@ impl Processor {
         let token_program = next_account_info(account_info_iter)?;
 
         let mut smelting_state = SmeltingState::unpack(&smelting_state_account.data.borrow())?;
+
+        // Check if user has enough INGOT tokens
+        let ingot_account_data = TokenAccount::unpack(&ingot_account.data.borrow())?;
+        if ingot_account_data.amount < amount {
+            return Err(SmeltingError::InsufficientBalance.into());
+        }
 
         let fee = SmeltingState::calculate_unsmelt_fee(amount);
         let ore_to_return = amount.saturating_sub(fee);
@@ -284,6 +296,12 @@ impl Processor {
             return Err(ProgramError::MissingRequiredSignature);
         }
 
+        // Check if source account has enough ORE tokens
+        let source_account_data = TokenAccount::unpack(&source_account.data.borrow())?;
+        if source_account_data.amount < amount {
+            return Err(SmeltingError::InsufficientBalance.into());
+        }
+
         let transfer_instruction = spl_token::instruction::transfer(
             token_program.key,
             source_account.key,
@@ -320,6 +338,12 @@ impl Processor {
 
         if !authority.is_signer {
             return Err(ProgramError::MissingRequiredSignature);
+        }
+
+        // Check if source account has enough INGOT tokens
+        let source_account_data = TokenAccount::unpack(&source_account.data.borrow())?;
+        if source_account_data.amount < amount {
+            return Err(SmeltingError::InsufficientBalance.into());
         }
 
         let transfer_instruction = spl_token::instruction::transfer(

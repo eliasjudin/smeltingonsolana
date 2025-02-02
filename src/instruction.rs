@@ -18,7 +18,7 @@ impl SmeltingInstruction {
         let (&tag, rest) = input
             .split_first()
             .ok_or(ProgramError::InvalidInstructionData)?;
-        let amount = u64::from_le_bytes(rest.try_into().unwrap());
+        let amount = u64::from_le_bytes(rest.try_into().map_err(|_| ProgramError::InvalidInstructionData)?);
 
         Ok(match tag {
             0 => Self::Smelt { amount },
